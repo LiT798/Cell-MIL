@@ -261,7 +261,8 @@ if __name__ == '__main__':
             print('{}: {}'.format(key, val))
         
         print('Initializing WSI object')
-        wsi_object = initialize_wsi(slide_path, seg_mask_path=mask_file, seg_params=seg_params, filter_params=filter_params)
+        # 对于EndoScell数据集需要skip_segmentation=True
+        wsi_object = initialize_wsi(slide_path, seg_mask_path=mask_file, seg_params=seg_params, filter_params=filter_params, skip_segmentation=True)
         print('Done!')
 
         wsi_ref_downsample = wsi_object.level_downsamples[patch_args.patch_level]
@@ -274,6 +275,12 @@ if __name__ == '__main__':
         if vis_params['vis_level'] < 0:
             best_level = wsi_object.wsi.get_best_level_for_downsample(32)
             vis_params['vis_level'] = best_level
+
+        max_level = len(wsi_object.level_dim) - 1
+        if vis_params['vis_level'] > max_level:  
+            print(f"Warning: vis_level {vis_params['vis_level']} exceeds max level {max_level}, using {max_level}")  
+            vis_params['vis_level'] = max_level
+
         mask = wsi_object.visWSI(**vis_params, number_contours=True)
         mask.save(mask_path)
         
@@ -430,6 +437,10 @@ if __name__ == '__main__':
                     heatmap.save(os.path.join(p_slide_save_dir, heatmap_save_name), quality=100)
                 else:
                     heatmap.save(os.path.join(p_slide_save_dir, heatmap_save_name))
+
+    # # 确保保存config.yaml的目录存在  
+    # config_dir = os.path.join(exp_args.raw_save_dir, exp_args.save_exp_code)  
+    # os.makedirs(config_dir, exist_ok=True)
 
     with open(os.path.join(exp_args.raw_save_dir, exp_args.save_exp_code, 'config.yaml'), 'w') as outfile:
         yaml.dump(config_dict, outfile, default_flow_style=False)
