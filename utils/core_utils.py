@@ -4,9 +4,18 @@ from utils.utils import *
 import os
 from dataset_modules.dataset_generic import save_splits
 from models.model_mil import MIL_fc, MIL_fc_mc
-from models.model_clam import CLAM_MB, CLAM_SB
+from models.model_clam import CLAM_MB, CLAM_SB, CLAM_LT
+from models.model_meanpooling_mil import MeanPooling_MIL
+from models.model_maxpooling_mil import MaxPooling_MIL
+from models.model_linear_mil import Linear_MIL
+from models.model_weightedmean_mil import WeightedMean_MIL
+from models.model_dsmil import DSMIL_MIL
+from utils.dsmil_core_utils import train_loop_dsmil, validate_dsmil
+from models.model_transmil import TransMIL
+from utils.transmil_core_utils import train_loop_transmil, validate_transmil
+from utils.clamlt_core_utils import train_loop_clam_lt, validate_clam_lt
 from sklearn.preprocessing import label_binarize
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve, f1_score
 from sklearn.metrics import auc as calc_auc
 
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -63,7 +72,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        self.val_loss_min = np.inf
 
     def __call__(self, epoch, val_loss, model, ckpt_name = 'checkpoint.pt'):
 
@@ -128,10 +137,10 @@ def train(datasets, cur, args):
                   'n_classes': args.n_classes, 
                   "embed_dim": args.embed_dim}
     
-    if args.model_size is not None and args.model_type != 'mil':
+    if args.model_size is not None and args.model_type not in ['mil', 'meanpooling_mil', 'maxpooling_mil', 'linear_mil', 'weightedmean_mil', 'dsmil', 'transmil']:  
         model_dict.update({"size_arg": args.model_size})
     
-    if args.model_type in ['clam_sb', 'clam_mb']:
+    if args.model_type in ['clam_sb', 'clam_mb', 'clam_lt']:
         if args.subtyping:
             model_dict.update({'subtyping': True})
         
@@ -150,9 +159,56 @@ def train(datasets, cur, args):
             model = CLAM_SB(**model_dict, instance_loss_fn=instance_loss_fn)
         elif args.model_type == 'clam_mb':
             model = CLAM_MB(**model_dict, instance_loss_fn=instance_loss_fn)
+        elif args.model_type == 'clam_lt':  
+            # 构建 config，优先从 args 读取（若未提供则使用默认）
+            cfg = {
+                'use_pos_encoding': getattr(args, 'use_pos_encoding', False),
+                'use_density': getattr(args, 'use_density', False),
+                'use_bag_statistics': getattr(args, 'use_bag_statistics', False),
+                'pos_type': getattr(args, 'pos_type', 'linear'),
+                'pos_fusion': getattr(args, 'pos_fusion', 'concat'),
+                'pos_dim': getattr(args, 'pos_dim', 32),
+                'k_density': getattr(args, 'k_density', 8),
+            }
+            model = CLAM_LT(**model_dict, instance_loss_fn=instance_loss_fn, config=cfg)
+            model = model.to(device)
+            counts = model.count_parameters(detailed=True)  # 会打印并返回 dict
+            print(counts)
         else:
             raise NotImplementedError
+
+    elif args.model_type == 'dsmil':  
+        from models.model_dsmil import DSMIL_MIL  
+        model = DSMIL_MIL(**model_dict)
+
+    elif args.model_type in ['maxpooling_mil', 'meanpooling_mil']:
+        if args.model_type == 'maxpooling_mil':
+            model = MaxPooling_MIL(**model_dict)  
+        elif args.model_type == 'meanpooling_mil':
+            model = MeanPooling_MIL(**model_dict)
+    elif args.model_type == 'linear_mil':
+        model = Linear_MIL(**model_dict)
+    elif args.model_type == 'weightedmean_mil':
+        model = WeightedMean_MIL(**model_dict)
+
+    elif args.model_type == 'transmil':  
+        if args.subtyping:  
+            model_dict.update({'subtyping': True})  
+        
+        if args.B > 0:  
+            model_dict.update({'k_sample': args.B})  
+        
+        if args.inst_loss == 'svm':  
+            from topk.svm import SmoothTop1SVM  
+            instance_loss_fn = SmoothTop1SVM(n_classes = 2)  
+            if device.type == 'cuda':  
+                instance_loss_fn = instance_loss_fn.cuda()  
+        else:  
+            instance_loss_fn = nn.CrossEntropyLoss()  
+        
+        model = TransMIL(**model_dict, instance_loss_fn=instance_loss_fn)
     
+
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
             model = MIL_fc_mc(**model_dict)
@@ -168,9 +224,17 @@ def train(datasets, cur, args):
     print('Done!')
     
     print('\nInit Loaders...', end=' ')
-    train_loader = get_split_loader(train_split, training=True, testing = args.testing, weighted = args.weighted_sample)
-    val_loader = get_split_loader(val_split,  testing = args.testing)
-    test_loader = get_split_loader(test_split, testing = args.testing)
+    if args.model_type == 'clam_lt':  
+        train_loader = get_split_loader_with_coords(train_split, training=True, testing = args.testing, weighted = args.weighted_sample)  
+        val_loader = get_split_loader_with_coords(val_split,  testing = args.testing)  
+        test_loader = get_split_loader_with_coords(test_split, testing = args.testing)  
+    else:  
+        train_loader = get_split_loader(train_split, training=True, testing = args.testing, weighted = args.weighted_sample)  
+        val_loader = get_split_loader(val_split,  testing = args.testing)  
+        test_loader = get_split_loader(test_split, testing = args.testing)
+    # train_loader = get_split_loader(train_split, training=True, testing = args.testing, weighted = args.weighted_sample)
+    # val_loader = get_split_loader(val_split,  testing = args.testing)
+    # test_loader = get_split_loader(test_split, testing = args.testing)
     print('Done!')
 
     print('\nSetup EarlyStopping...', end=' ')
@@ -182,9 +246,26 @@ def train(datasets, cur, args):
     print('Done!')
 
     for epoch in range(args.max_epochs):
-        if args.model_type in ['clam_sb', 'clam_mb'] and not args.no_inst_cluster:     
+        if args.model_type == 'transmil':  
+            from utils.transmil_core_utils import train_loop_transmil, validate_transmil  
+            train_loop_transmil(epoch, model, train_loader, optimizer, args.n_classes, writer, loss_fn)  
+            stop = validate_transmil(cur, epoch, model, val_loader, args.n_classes,   
+                early_stopping, writer, loss_fn, args.results_dir) 
+
+        elif args.model_type == 'dsmil':  
+
+            train_loop_dsmil(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, writer, loss_fn)  
+            stop = validate_dsmil(cur, epoch, model, val_loader, args.n_classes,   
+                early_stopping, writer, loss_fn, args.results_dir) 
+
+        elif args.model_type in ['clam_sb', 'clam_mb'] and not args.no_inst_cluster:     
             train_loop_clam(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, writer, loss_fn)
             stop = validate_clam(cur, epoch, model, val_loader, args.n_classes, 
+                early_stopping, writer, loss_fn, args.results_dir)
+            
+        elif args.model_type == 'clam_lt' and not args.no_inst_cluster:  
+            train_loop_clam_lt(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, writer, loss_fn)
+            stop = validate_clam_lt(cur, epoch, model, val_loader, args.n_classes, 
                 early_stopping, writer, loss_fn, args.results_dir)
         
         else:
@@ -200,11 +281,30 @@ def train(datasets, cur, args):
     else:
         torch.save(model.state_dict(), os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(cur)))
 
-    _, val_error, val_auc, _= summary(model, val_loader, args.n_classes)
-    print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+    # _, val_error, val_auc, _, _= summary(model, val_loader, args.n_classes)
+    # print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
 
-    results_dict, test_error, test_auc, acc_logger = summary(model, test_loader, args.n_classes)
-    print('Test error: {:.4f}, ROC AUC: {:.4f}'.format(test_error, test_auc))
+    if args.model_type == 'transmil':  
+        from utils.transmil_core_utils import summary_transmil  
+        results_dict, test_error, test_auc, test_f1, acc_logger = summary_transmil(model, test_loader, args.n_classes)
+        _, val_error, val_auc, _, _= summary_transmil(model, val_loader, args.n_classes)
+        print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+    elif args.model_type == 'dsmil':  
+        from utils.dsmil_core_utils import summary_dsmil  
+        results_dict, test_error, test_auc, test_f1, acc_logger = summary_dsmil(model, test_loader, args.n_classes)
+        _, val_error, val_auc, _, _= summary_dsmil(model, val_loader, args.n_classes)
+        print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+    elif args.model_type == 'clam_lt':  
+        from utils.clamlt_core_utils import summary_lt
+        results_dict, test_error, test_auc, test_f1, acc_logger = summary_lt(model, test_loader, args.n_classes)
+        _, val_error, val_auc, _, _= summary_lt(model, val_loader, args.n_classes)
+        print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+    else:  
+        results_dict, test_error, test_auc, test_f1, acc_logger = summary(model, test_loader, args.n_classes)
+        _, val_error, val_auc, _, _= summary(model, val_loader, args.n_classes)
+        print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+
+    print('Test error: {:.4f}, ROC AUC: {:.4f}, F1: {:.4f}'.format(test_error, test_auc, test_f1))  
 
     for i in range(args.n_classes):
         acc, correct, count = acc_logger.get_summary(i)
@@ -218,8 +318,9 @@ def train(datasets, cur, args):
         writer.add_scalar('final/val_auc', val_auc, 0)
         writer.add_scalar('final/test_error', test_error, 0)
         writer.add_scalar('final/test_auc', test_auc, 0)
+        writer.add_scalar('final/test_f1', test_f1, 0)
         writer.close()
-    return results_dict, test_auc, val_auc, 1-test_error, 1-val_error 
+    return results_dict, test_auc, val_auc, test_f1, 1-test_error, 1-val_error
 
 
 def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writer = None, loss_fn = None):
@@ -333,7 +434,6 @@ def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_f
         writer.add_scalar('train/loss', train_loss, epoch)
         writer.add_scalar('train/error', train_error, epoch)
 
-   
 def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer = None, loss_fn = None, results_dir=None):
     model.eval()
     acc_logger = Accuracy_Logger(n_classes=n_classes)
@@ -362,22 +462,28 @@ def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer
             val_error += error
             
 
+    # 计算预测标签  
+    preds = np.argmax(prob, axis=1)
+
     val_error /= len(loader)
     val_loss /= len(loader)
 
     if n_classes == 2:
         auc = roc_auc_score(labels, prob[:, 1])
+        f1 = f1_score(labels, preds) 
     
     else:
         auc = roc_auc_score(labels, prob, multi_class='ovr')
+        f1 = f1_score(labels, preds, average='macro') 
     
     
     if writer:
         writer.add_scalar('val/loss', val_loss, epoch)
         writer.add_scalar('val/auc', auc, epoch)
         writer.add_scalar('val/error', val_error, epoch)
+        writer.add_scalar('val/f1', f1, epoch) 
 
-    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}'.format(val_loss, val_error, auc))
+    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, f1: {:.4f}'.format(val_loss, val_error, auc, f1))
     for i in range(n_classes):
         acc, correct, count = acc_logger.get_summary(i)
         print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))     
@@ -432,11 +538,13 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
             error = calculate_error(Y_hat, label)
             val_error += error
 
+    preds = np.argmax(prob, axis=1) 
     val_error /= len(loader)
     val_loss /= len(loader)
 
     if n_classes == 2:
         auc = roc_auc_score(labels, prob[:, 1])
+        f1 = f1_score(labels, preds)
         aucs = []
     else:
         aucs = []
@@ -449,8 +557,9 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
                 aucs.append(float('nan'))
 
         auc = np.nanmean(np.array(aucs))
+        f1 = f1_score(labels, preds, average='macro')
 
-    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}'.format(val_loss, val_error, auc))
+    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, f1: {:.4f}'.format(val_loss, val_error, auc, f1))
     if inst_count > 0:
         val_inst_loss /= inst_count
         for i in range(2):
@@ -462,6 +571,7 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
         writer.add_scalar('val/auc', auc, epoch)
         writer.add_scalar('val/error', val_error, epoch)
         writer.add_scalar('val/inst_loss', val_inst_loss, epoch)
+        writer.add_scalar('val/f1', f1, epoch)
 
 
     for i in range(n_classes):
@@ -482,6 +592,8 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
 
     return False
 
+
+
 def summary(model, loader, n_classes):
     acc_logger = Accuracy_Logger(n_classes=n_classes)
     model.eval()
@@ -490,6 +602,7 @@ def summary(model, loader, n_classes):
 
     all_probs = np.zeros((len(loader), n_classes))
     all_labels = np.zeros(len(loader))
+    all_preds = np.zeros(len(loader))  # 添加这行 
 
     slide_ids = loader.dataset.slide_data['slide_id']
     patient_results = {}
@@ -504,6 +617,7 @@ def summary(model, loader, n_classes):
         probs = Y_prob.cpu().numpy()
         all_probs[batch_idx] = probs
         all_labels[batch_idx] = label.item()
+        all_preds[batch_idx] = Y_hat.item()  # 添加这行
         
         patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 'label': label.item()}})
         error = calculate_error(Y_hat, label)
@@ -514,6 +628,7 @@ def summary(model, loader, n_classes):
     if n_classes == 2:
         auc = roc_auc_score(all_labels, all_probs[:, 1])
         aucs = []
+        f1 = f1_score(all_labels, all_preds)  # 二分类F1 
     else:
         aucs = []
         binary_labels = label_binarize(all_labels, classes=[i for i in range(n_classes)])
@@ -525,6 +640,7 @@ def summary(model, loader, n_classes):
                 aucs.append(float('nan'))
 
         auc = np.nanmean(np.array(aucs))
+        f1 = f1_score(all_labels, all_preds, average='macro')  # 宏平均F1
 
 
-    return patient_results, test_error, auc, acc_logger
+    return patient_results, test_error, auc, f1, acc_logger

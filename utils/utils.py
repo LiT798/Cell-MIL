@@ -37,6 +37,12 @@ def collate_MIL(batch):
 	label = torch.LongTensor([item[1] for item in batch])
 	return [img, label]
 
+def collate_MIL_WithCoords(batch):  
+    img = torch.cat([item[0] for item in batch], dim = 0)  
+    label = torch.LongTensor([item[1] for item in batch])  
+    coords = torch.cat([item[2] for item in batch], dim = 0)  
+    return [img, label, coords]
+
 def collate_features(batch):
 	img = torch.cat([item[0] for item in batch], dim = 0)
 	coords = np.vstack([item[1] for item in batch])
@@ -68,6 +74,27 @@ def get_split_loader(split_dataset, training = False, testing = False, weighted 
 		loader = DataLoader(split_dataset, batch_size=1, sampler = SubsetSequentialSampler(ids), collate_fn = collate_MIL, **kwargs )
 
 	return loader
+
+def get_split_loader_with_coords(split_dataset, training = False, testing = False, weighted = False):  
+    """  
+        return loader for CLAM_LT model that needs coordinates  
+    """  
+    kwargs = {'num_workers': 4} if device.type == "cuda" else {}  
+      
+    if not testing:  
+        if training:  
+            if weighted:  
+                weights = make_weights_for_balanced_classes_split(split_dataset)  
+                loader = DataLoader(split_dataset, batch_size=1, sampler = WeightedRandomSampler(weights, len(weights)), collate_fn = collate_MIL_WithCoords, **kwargs)	  
+            else:  
+                loader = DataLoader(split_dataset, batch_size=1, sampler = RandomSampler(split_dataset), collate_fn = collate_MIL_WithCoords, **kwargs)  
+        else:  
+            loader = DataLoader(split_dataset, batch_size=1, sampler = SequentialSampler(split_dataset), collate_fn = collate_MIL_WithCoords, **kwargs)  
+    else:  
+        ids = np.random.choice(np.arange(len(split_dataset), int(len(split_dataset)*0.1)), replace = False)  
+        loader = DataLoader(split_dataset, batch_size=1, sampler = SubsetSequentialSampler(ids), collate_fn = collate_MIL_WithCoords, **kwargs )  
+  
+    return loader
 
 def get_optim(model, args):
 	if args.opt == "adam":
