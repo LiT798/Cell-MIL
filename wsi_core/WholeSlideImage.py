@@ -20,7 +20,7 @@ from utils.file_utils import load_pkl, save_pkl
 Image.MAX_IMAGE_PIXELS = 933120000
 
 class WholeSlideImage(object):
-    def __init__(self, path):
+    def __init__(self, path, skip_segmentation=True):
 
         """
         Args:
@@ -36,6 +36,11 @@ class WholeSlideImage(object):
         self.contours_tissue = None
         self.contours_tumor = None
         self.hdf5_file = None
+        self.skip_segmentation = skip_segmentation
+        print(f"skip_segmentation: {skip_segmentation}")
+        if skip_segmentation:  
+            self.init_default_contours()
+            print(f"Created default contours: {len(self.contours_tissue)} contours")
 
     def getOpenSlide(self):
         return self.wsi
@@ -142,6 +147,9 @@ class WholeSlideImage(object):
 
             return foreground_contours, hole_contours
         
+        if self.skip_segmentation:  
+            return  # 已经在初始化时创建了默认轮廓 
+
         img = np.array(self.wsi.read_region((0,0), seg_level, self.level_dim[seg_level]))
         img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)  # Convert to HSV space
         img_med = cv2.medianBlur(img_hsv[:,:,1], mthresh)  # Apply median blurring
@@ -372,6 +380,11 @@ class WholeSlideImage(object):
         save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
         print("Creating patches for: ", self.name, "...",)
         elapsed = time.time()
+
+        # 如果没有轮廓，创建覆盖整个图像的默认轮廓  
+        if self.contours_tissue is None:  
+            self.init_default_contours()
+
         n_contours = len(self.contours_tissue)
         print("Total number of contours to process: ", n_contours)
         fp_chunk_size = math.ceil(n_contours * 0.05)
@@ -530,6 +543,7 @@ class WholeSlideImage(object):
         if binarize:
             if thresh < 0:
                 threshold = 1.0/len(scores)
+                # threshold = thresh
                 
             else:
                 threshold =  thresh
@@ -639,6 +653,8 @@ class WholeSlideImage(object):
 
                 # color block (cmap applied to attention block)
                 color_block = (cmap(raw_block) * 255)[:,:,:3].astype(np.uint8)
+                # color_block = np.full((img_block.shape[0], img_block.shape[1], 3), [255, 0, 0], dtype=np.uint8) #纯红色
+                # color_block = np.full((img_block.shape[0], img_block.shape[1], 3), [255, 255, 0], dtype=np.uint8) #纯黄色
 
                 if segment:
                     # tissue mask block
@@ -736,6 +752,14 @@ class WholeSlideImage(object):
         print('detected {}/{} of region as tissue'.format(tissue_mask.sum(), tissue_mask.size))
         return tissue_mask
 
+    def init_default_contours(self):  
+        """创建覆盖整个图像的默认轮廓"""  
+        w, h = self.level_dim[0]  # 使用原始分辨率  
+        print(f"No tissue contours found, creating default contour for entire image: {w}x{h}") 
+        # 创建矩形轮廓覆盖整个图像  
+        contour = np.array([[[0, 0]], [[w, 0]], [[w, h]], [[0, h]]], dtype=np.int32)  
+        self.contours_tissue = [contour]  
+        self.holes_tissue = [[]]  # 没有孔洞
 
 
 

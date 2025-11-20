@@ -19,6 +19,7 @@ from utils.file_utils import save_hdf5
 from scipy.stats import percentileofscore
 from utils.constants import MODEL2CONSTANTS
 from tqdm import tqdm
+import openslide
 
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,14 +39,23 @@ def drawHeatmap(scores, coords, slide_path=None, wsi_object=None, vis_level = -1
     heatmap = wsi_object.visHeatmap(scores=scores, coords=coords, vis_level=vis_level, **kwargs)
     return heatmap
 
-def initialize_wsi(wsi_path, seg_mask_path=None, seg_params=None, filter_params=None):
-    wsi_object = WholeSlideImage(wsi_path)
-    if seg_params['seg_level'] < 0:
-        best_level = wsi_object.wsi.get_best_level_for_downsample(32)
-        seg_params['seg_level'] = best_level
 
-    wsi_object.segmentTissue(**seg_params, filter_params=filter_params)
-    wsi_object.saveSegmentation(seg_mask_path)
+def initialize_wsi(wsi_path, seg_mask_path=None, seg_params=None, filter_params=None, skip_segmentation=False):  
+    wsi_object = WholeSlideImage(wsi_path, skip_segmentation=skip_segmentation)
+    wsi_temp = openslide.open_slide(wsi_path) 
+    max_level = len(wsi_temp.level_dimensions) - 1  
+    print(f"WSI has {max_level + 1} levels (0-{max_level})")  
+    if not skip_segmentation:  
+        if seg_params['seg_level'] < 0:  
+            best_level = wsi_object.wsi.get_best_level_for_downsample(32)  
+            # seg_params['seg_level'] = best_level
+            seg_params['seg_level'] = min(best_level, max_level)  # 确保不超出范围
+        else:  
+            seg_params['seg_level'] = min(seg_params['seg_level'], max_level)  # 限制在有效范围内
+        print(f"Using seg_level {seg_params['seg_level']} (max available: {max_level})") 
+        
+        wsi_object.segmentTissue(**seg_params, filter_params=filter_params)  
+        wsi_object.saveSegmentation(seg_mask_path)  
     return wsi_object
 
 def compute_from_patches(wsi_object, img_transforms, feature_extractor=None, clam_pred=None, model=None, batch_size=512,  
