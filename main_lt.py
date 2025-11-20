@@ -9,7 +9,7 @@ import math
 from utils.file_utils import save_pkl, load_pkl
 from utils.utils import *
 from utils.core_utils import train
-from dataset_modules.dataset_generic import Generic_WSI_Classification_Dataset, Generic_MIL_Dataset
+from dataset_modules.dataset_generic import Generic_WSI_Classification_Dataset, Generic_MIL_Dataset, Generic_MIL_Dataset_WithCoords
 
 # pytorch imports
 import torch
@@ -47,6 +47,14 @@ def main(args):
                 csv_path='{}/splits_{}.csv'.format(args.split_dir, i))
         
         datasets = (train_dataset, val_dataset, test_dataset)
+
+        test_sample = train_dataset[0]  
+        print(f"Dataset returns {len(test_sample)} values")  
+        if len(test_sample) == 3:  
+            print("✓ Dataset correctly returns (features, label, coords)")  
+        else:  
+            print("✗ Dataset only returns (features, label)")
+
         results, test_auc, val_auc, test_f1, test_acc, val_acc  = train(datasets, i, args)
         all_test_auc.append(test_auc)
         all_val_auc.append(val_auc)
@@ -57,35 +65,42 @@ def main(args):
         filename = os.path.join(args.results_dir, 'split_{}_results.pkl'.format(i))
         save_pkl(filename, results)
 
-    final_df = pd.DataFrame({'folds': folds, 'test_auc': all_test_auc,   
-    'val_auc': all_val_auc, 'test_acc': all_test_acc, 'val_acc': all_val_acc,   
-    'test_f1': all_test_f1}) 
+        # === 每折更新 summary ===
+        final_df = pd.DataFrame({
+            'folds': np.arange(start, start + len(all_test_auc)),
+            'test_auc': all_test_auc,
+            'val_auc': all_val_auc,
+            'test_acc': all_test_acc,
+            'val_acc': all_val_acc,
+            'test_f1': all_test_f1
+        })
 
-    # 计算均值和标准差  
-    mean_test_auc = np.mean(all_test_auc)  
-    std_test_auc = np.std(all_test_auc)  
-    mean_test_acc = np.mean(all_test_acc)  
-    std_test_acc = np.std(all_test_acc)  
-    mean_test_f1 = np.mean(all_test_f1)  
-    std_test_f1 = np.std(all_test_f1)  
+         # 均值 ± 标准差
+        mean_test_auc = np.mean(all_test_auc)
+        std_test_auc = np.std(all_test_auc)
+        mean_test_acc = np.mean(all_test_acc)
+        std_test_acc = np.std(all_test_acc)
+        mean_test_f1 = np.mean(all_test_f1)
+        std_test_f1 = np.std(all_test_f1)
 
-    # 添加汇总行  
-    summary_row = pd.DataFrame({  
-        'folds': ['mean±std'],  
-        'test_auc': [f'{mean_test_auc:.4f}±{std_test_auc:.4f}'],  
-        'val_auc': [''],  # 如果不需要val指标的汇总可以留空  
-        'test_acc': [f'{mean_test_acc:.4f}±{std_test_acc:.4f}'],  
-        'val_acc': [''],  
-        'test_f1': [f'{mean_test_f1:.4f}±{std_test_f1:.4f}']  
-    })  
-    
-    final_df = pd.concat([final_df, summary_row], ignore_index=True)
+        summary_row = pd.DataFrame({
+        'folds': ['mean±std'],
+        'test_auc': [f'{mean_test_auc:.4f}±{std_test_auc:.4f}'],
+        'val_auc': [''],
+        'test_acc': [f'{mean_test_acc:.4f}±{std_test_acc:.4f}'],
+        'val_acc': [''],
+        'test_f1': [f'{mean_test_f1:.4f}±{std_test_f1:.4f}']
+        })
 
-    if len(folds) != args.k:
-        save_name = 'summary_partial_{}_{}.csv'.format(start, end)
-    else:
-        save_name = 'summary.csv'
-    final_df.to_csv(os.path.join(args.results_dir, save_name))
+        final_df = pd.concat([final_df, summary_row], ignore_index=True)
+
+        
+        # 保存 CSV（每折覆盖更新）
+        save_path = os.path.join(args.results_dir, 'summary_progress.csv')
+        final_df.to_csv(save_path, index=False)
+        print(f"✅ Updated summary after fold {i} saved to: {save_path}")
+
+
 
 # Generic training settings
 parser = argparse.ArgumentParser(description='Configurations for WSI Training')
@@ -116,7 +131,7 @@ parser.add_argument('--opt', type=str, choices = ['adam', 'sgd'], default='adam'
 parser.add_argument('--drop_out', type=float, default=0.25, help='dropout')
 parser.add_argument('--bag_loss', type=str, choices=['svm', 'ce'], default='ce',
                      help='slide-level classification loss function (default: ce)')
-parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'mil', 'maxpooling_mil', 'meanpooling_mil', 'linear_mil', 'weightedmean_mil', 'dsmil', 'transmil'], default='clam_sb', 
+parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'clam_lt', 'mil', 'maxpooling_mil', 'meanpooling_mil', 'linear_mil', 'weightedmean_mil', 'dsmil', 'transmil'], default='clam_sb', 
                     help='type of model (default: clam_sb, clam w/ single attention branch)')
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
@@ -132,6 +147,14 @@ parser.add_argument('--subtyping', action='store_true', default=False,
 parser.add_argument('--bag_weight', type=float, default=0.7,
                     help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--B', type=int, default=8, help='numbr of positive/negative patches to sample for clam')
+parser.add_argument('--pos_dim', type=int, default=32,  
+                   help='positional encoding dimension')
+parser.add_argument('--use_pos_encoding', action='store_true', default=False,
+                    help='Enable positional encoding module (default: False)')
+parser.add_argument('--use_density', action='store_true', default=False,
+                    help='Enable density feature module (default: False)')
+parser.add_argument('--use_bag_statistics', action='store_true', default=False,
+                    help='Enable bag-level statistics module (default: False)')
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -202,7 +225,7 @@ elif args.task == 'task_2_tumor_subtyping':
 
 elif args.task == 'task_3_TCGA_Lung':
     args.n_classes=2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/TCGA_Lung.csv',
+    dataset = Generic_MIL_Dataset_WithCoords(csv_path = 'dataset_csv/TCGA_Lung.csv',
                             data_dir= os.path.join(args.data_root_dir, ''),
                             shuffle = False, 
                             seed = args.seed, 
@@ -213,7 +236,7 @@ elif args.task == 'task_3_TCGA_Lung':
 
 elif args.task == 'task_4_TCGA_BRCA':
     args.n_classes=2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/TCGA_BRCA.csv',
+    dataset = Generic_MIL_Dataset_WithCoords(csv_path = 'dataset_csv/TCGA_BRCA.csv',
                             data_dir= os.path.join(args.data_root_dir, ''),
                             shuffle = False, 
                             seed = args.seed, 
@@ -224,7 +247,7 @@ elif args.task == 'task_4_TCGA_BRCA':
 
 elif args.task == 'task_5_EndoScell':
     args.n_classes=2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/EndoScell.csv',
+    dataset = Generic_MIL_Dataset_WithCoords(csv_path = 'dataset_csv/EndoScell.csv',
                             data_dir= os.path.join(args.data_root_dir, ''),
                             shuffle = False, 
                             seed = args.seed, 
