@@ -367,3 +367,100 @@ class Generic_Split(Generic_MIL_Dataset):
 		
 
 
+
+class Generic_MIL_Dataset_WithCoords(Generic_WSI_Classification_Dataset):    
+    def __init__(self, data_dir, **kwargs):  
+        super().__init__(**kwargs)  
+        self.data_dir = data_dir  
+        self.use_h5 = False  
+  
+    def load_from_h5(self, toggle):  
+        self.use_h5 = toggle  
+        
+    def __getitem__(self, idx):  
+        slide_id = self.slide_data['slide_id'][idx]  
+        label = self.slide_data['label'][idx]  
+        if isinstance(self.data_dir, dict):  
+            source = self.slide_data['source'][idx]  
+            data_dir = self.data_dir[source]  
+        else:  
+            data_dir = self.data_dir  
+  
+        full_path = os.path.join(data_dir, 'h5_files', f'{slide_id}.h5')  
+        with h5py.File(full_path, 'r') as hdf5_file:  
+            features = hdf5_file['features'][:]  
+            coords = hdf5_file['coords'][:]  
+  
+            features = torch.from_numpy(features)  
+            coords = torch.from_numpy(coords)  
+            return features, label, coords  
+  
+    def get_split_from_df_with_coords(self, all_splits, split_key):
+        print(f"Debug: Looking for split_key: {split_key}")  
+        print(f"Debug: CSV columns: {all_splits.columns.tolist()}")  
+        print(f"Debug: CSV shape: {all_splits.shape}")  
+        print(f"Debug: First few rows:\n{all_splits.head()}") 
+        # if split_key in all_splits.columns:
+        #     split_mask = all_splits[split_key] == True
+        #     split_slides = all_splits[split_mask].index.tolist()
+        #     if len(split_slides) > 0:
+        #         slide_ids = all_splits.index[split_mask].tolist()
+        #         mask = self.slide_data['slide_id'].isin(slide_ids)
+        #         df_slice = self.slide_data[mask].reset_index(drop=True)
+        #         return df_slice
+        # else:
+        #     split_slides = all_splits[split_key].dropna().tolist()
+        #     if len(split_slides) > 0:
+        #         mask = self.slide_data['slide_id'].isin(split_slides)
+        #         df_slice = self.slide_data[mask].reset_index(drop=True)
+        #         return df_slice
+        # return None
+        if split_key in all_splits.columns:  
+            split_slides = all_splits[split_key].dropna().tolist()  
+            print(f"Debug: Found {len(split_slides)} slides for {split_key}")  
+            if len(split_slides) > 0:  
+                mask = self.slide_data['slide_id'].isin(split_slides)  
+                df_slice = self.slide_data[mask].reset_index(drop=True)  
+                print(f"Debug: Matched {len(df_slice)} slides in main dataset")  
+                return df_slice  
+      
+        print(f"Debug: No data found for {split_key}")  
+        return None
+
+    def return_splits(self, from_id=True, csv_path=None):  
+        if from_id:  
+            raise NotImplementedError  
+        else:  
+            assert csv_path is not None
+            all_splits = pd.read_csv(csv_path)  
+            train_split = self.get_split_from_df_with_coords(all_splits, 'train')  
+            val_split = self.get_split_from_df_with_coords(all_splits, 'val')  
+            test_split = self.get_split_from_df_with_coords(all_splits, 'test')  
+              
+            # 使用 Generic_Split_WithCoords 而不是 Generic_Split  
+            train_dataset = Generic_Split_WithCoords(train_split, data_dir=self.data_dir, num_classes=self.num_classes)  
+            val_dataset = Generic_Split_WithCoords(val_split, data_dir=self.data_dir, num_classes=self.num_classes)  
+            test_dataset = Generic_Split_WithCoords(test_split, data_dir=self.data_dir, num_classes=self.num_classes)  
+              
+            return train_dataset, val_dataset, test_dataset  
+  
+  
+class Generic_Split_WithCoords(Generic_Split):    
+    def __getitem__(self, idx):    
+        slide_id = self.slide_data['slide_id'][idx]    
+        label = self.slide_data['label'][idx]    
+            
+        if isinstance(self.data_dir, dict):    
+            source = self.slide_data['source'][idx]    
+            data_dir = self.data_dir[source]    
+        else:    
+            data_dir = self.data_dir    
+    
+        full_path = os.path.join(data_dir, 'h5_files', f'{slide_id}.h5')    
+        with h5py.File(full_path, 'r') as hdf5_file:    
+            features = hdf5_file['features'][:]    
+            coords = hdf5_file['coords'][:]    
+                
+            features = torch.from_numpy(features)    
+            coords = torch.from_numpy(coords)    
+            return features, label, coords
